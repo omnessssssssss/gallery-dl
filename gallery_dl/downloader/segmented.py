@@ -9,11 +9,9 @@
 """Downloader module for segmented downloading"""
 
 import threading
-import time
 import os
 import signal
 from enum import Enum
-from .. import util
 from .. import util
 
 # Global shutdown event for all segmented downloads
@@ -74,18 +72,15 @@ class DownloadManager:
         self.out = self.job.out
         self.downloaded_bytes = 0
         
-        # Set up global signal handler
         _setup_global_signal_handler()
 
     def download(self):
         try:
-            # Check if we're already shutting down
             if _global_shutdown_event.is_set():
                 return False
                 
             # Ensure pathfmt is properly set up
             if not self.pathfmt.temppath:
-                # Set up the pathfmt similar to how the regular HTTP downloader does it
                 if self.http_downloader.part:
                     self.pathfmt.part_enable(self.http_downloader.partdir)
                 if not self.pathfmt.temppath:
@@ -93,12 +88,8 @@ class DownloadManager:
             
             # Ensure realpath points to the final filename (without .part)
             if self.pathfmt.temppath.endswith('.part') and self.pathfmt.realpath.endswith('.part'):
-                # Fix the realpath to point to the final filename
-                self.pathfmt.realpath = self.pathfmt.temppath[:-5]  # Remove .part
+                self.pathfmt.realpath = self.pathfmt.temppath[:-5]
                 self.pathfmt.path = self.pathfmt.realpath
-            
-            self.log.debug(f"Initial temppath: {self.pathfmt.temppath}")
-            self.log.debug(f"Initial realpath: {self.pathfmt.realpath}")
             
             self._get_file_size()
             self._create_initial_segments()
@@ -111,24 +102,13 @@ class DownloadManager:
             for thread in self.threads:
                 thread.join()
 
-            # Check if we were interrupted
             if _global_shutdown_event.is_set():
                 self.log.warning("Download was interrupted")
                 self._cleanup_partial_files()
                 return False
 
             self._assemble_file()
-            
-            self.log.debug(f"Before finalize - temppath: {self.pathfmt.temppath}")
-            self.log.debug(f"Before finalize - realpath: {self.pathfmt.realpath}")
-            
-            # Call finalize to move the .part file to the final location
-            # This is what the regular HTTP downloader does
             result = self.pathfmt.finalize()
-            self.log.debug(f"Finalize result: {result}")
-            
-            self.log.debug(f"After finalize - temppath: {self.pathfmt.temppath}")
-            self.log.debug(f"After finalize - realpath: {self.pathfmt.realpath}")
             
             return True
         except Exception as e:
@@ -149,7 +129,6 @@ class DownloadManager:
         response = self.http_downloader.session.head(self.url, timeout=self.http_downloader.timeout)
         response.raise_for_status()
         self.file_size = int(response.headers['Content-Length'])
-        self.log.debug(f"File size: {self.file_size}")
 
     def _create_initial_segments(self):
         segment_size = self.file_size // self.num_threads
@@ -159,7 +138,6 @@ class DownloadManager:
             if i == self.num_threads - 1:
                 end = self.file_size - 1
             self.segments.append(Segment(start, end))
-        self.log.debug(f"Created {len(self.segments)} initial segments")
 
     def _worker(self):
         while not _global_shutdown_event.is_set():
@@ -167,14 +145,12 @@ class DownloadManager:
             if not segment:
                 segment = self._split_largest_segment()
                 if not segment:
-                    # No more work to do
                     break
 
             try:
                 self._download_segment(segment)
             except Exception as e:
                 if _global_shutdown_event.is_set():
-                    # We're shutting down, don't log this as an error
                     break
                 self.log.error(f"Failed to download segment {segment}: {e}")
                 with segment.lock:
@@ -188,7 +164,6 @@ class DownloadManager:
         response = self.http_downloader.session.get(self.url, headers=headers, stream=True, timeout=self.http_downloader.timeout)
         response.raise_for_status()
 
-        # Ensure the directory exists before creating segment files
         os.makedirs(self.pathfmt.realdirectory, exist_ok=True)
 
         temp_part_path = os.path.join(self.pathfmt.realdirectory, f"{os.path.basename(self.pathfmt.temppath)}.part{segment.start}")
@@ -200,14 +175,12 @@ class DownloadManager:
                         self.downloaded_bytes += len(chunk)
                         self.out.progress(self.file_size, self.downloaded_bytes, 0)
                 
-                # Check for shutdown signal during download
                 if _global_shutdown_event.is_set():
                     response.close()
                     return
 
         with segment.lock:
             segment.status = SegmentStatus.COMPLETED
-        self.log.debug(f"Finished downloading segment {segment}")
 
     def _get_next_segment(self):
         with self.lock:
@@ -220,13 +193,12 @@ class DownloadManager:
     def _split_largest_segment(self):
         largest_segment = None
         with self.lock:
-            # Find the largest segment that is currently being downloaded
             for segment in self.segments:
                 with segment.lock:
                     if segment.status == SegmentStatus.DOWNLOADING and (not largest_segment or segment.size > largest_segment.size):
                         largest_segment = segment
 
-            if largest_segment and largest_segment.size > 1024 * 1024: # Only split if larger than 1MB
+            if largest_segment and largest_segment.size > 1024 * 1024:
                 with largest_segment.lock:
                     old_end = largest_segment.end
                     split_point = largest_segment.start + largest_segment.size // 2
@@ -235,19 +207,12 @@ class DownloadManager:
 
                     new_segment = Segment(split_point + 1, old_end)
                     self.segments.append(new_segment)
-                    self.log.debug(f"Split segment {largest_segment} into {largest_segment} and {new_segment}")
                     return new_segment
         return None
 
     def _assemble_file(self):
-        self.log.debug("Assembling file")
-        self.log.debug(f"Assemble - temppath: {self.pathfmt.temppath}")
-        self.log.debug(f"Assemble - realpath: {self.pathfmt.realpath}")
-        
-        # Ensure the directory exists before creating the final file
         os.makedirs(self.pathfmt.realdirectory, exist_ok=True)
         
-        # Make sure we have a valid temppath
         if not self.pathfmt.temppath:
             self.log.error("No temppath available for assembly")
             return
@@ -259,16 +224,8 @@ class DownloadManager:
                     with open(part_path, 'rb') as part_file:
                         data = part_file.read()
                         f.write(data)
-                        self.log.debug(f"Wrote {len(data)} bytes from segment {segment.start}")
                     util.remove_file(part_path)
                 except FileNotFoundError:
                     self.log.warning(f"Segment file {part_path} not found during assembly")
                 except Exception as e:
                     self.log.error(f"Error reading segment {part_path}: {e}")
-                    
-        # Verify the assembled file was created
-        if os.path.exists(self.pathfmt.temppath):
-            size = os.path.getsize(self.pathfmt.temppath)
-            self.log.debug(f"File assembled successfully: {self.pathfmt.temppath} ({size} bytes)")
-        else:
-            self.log.error(f"Failed to create assembled file: {self.pathfmt.temppath}")

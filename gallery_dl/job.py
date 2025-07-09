@@ -153,7 +153,6 @@ class Job():
 
         try:
             for msg in extractor:
-                # Check if we're shutting down
                 try:
                     from .downloader.segmented import _global_shutdown_event
                     if _global_shutdown_event.is_set():
@@ -322,7 +321,6 @@ class DownloadJob(Job):
 
     def handle_url(self, url, kwdict):
         """Download the resource specified in 'url'"""
-        # Check if we're shutting down
         try:
             from .downloader.segmented import _global_shutdown_event
             if _global_shutdown_event.is_set():
