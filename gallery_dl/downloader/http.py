@@ -13,6 +13,7 @@ import mimetypes
 from requests.exceptions import RequestException, ConnectionError, Timeout
 from .common import DownloaderBase
 from .. import text, util, output
+from .segmented import DownloadManager
 from ssl import SSLError
 
 
@@ -20,7 +21,8 @@ class HttpDownloader(DownloaderBase):
     scheme = "http"
 
     def __init__(self, job):
-        DownloaderBase.__init__(self, job)
+        super().__init__(job)
+        self.job = job
         extractor = job.extractor
         self.downloading = False
 
@@ -39,6 +41,7 @@ class HttpDownloader(DownloaderBase):
         self.verify = self.config("verify", extractor._verify)
         self.mtime = self.config("mtime", True)
         self.rate = self.config("rate")
+        self.segmented = self.config("downloader-segmented", False)
         interval_429 = self.config("sleep-429")
 
         if not self.config("consume-content", False):
@@ -103,6 +106,9 @@ class HttpDownloader(DownloaderBase):
                 util.remove_file(pathfmt.temppath)
 
     def _download_impl(self, url, pathfmt):
+        if self.segmented:
+            manager = DownloadManager(self, url, pathfmt)
+            return manager.download()
         response = None
         tries = code = 0
         msg = ""

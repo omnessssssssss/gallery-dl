@@ -11,6 +11,7 @@ import errno
 import logging
 import functools
 import collections
+from concurrent.futures import ThreadPoolExecutor
 
 from . import (
     extractor,
@@ -152,6 +153,15 @@ class Job():
 
         try:
             for msg in extractor:
+                # Check if we're shutting down
+                try:
+                    from .downloader.segmented import _global_shutdown_event
+                    if _global_shutdown_event.is_set():
+                        self.log.info("Stopping extraction due to shutdown signal")
+                        break
+                except ImportError:
+                    pass
+                    
                 self.dispatch(msg)
         except exception.StopExtraction as exc:
             if exc.message:
@@ -183,6 +193,13 @@ class Job():
             if msg is None:
                 log.info("No results for %s", extractor.url)
         finally:
+            for future in self.futures:
+                try:
+                    future.result()
+                except Exception as exc:
+                    self.log.error("Error during concurrent download: %s", exc)
+                    self.status |= 1
+            self.executor.shutdown(wait=True)
             self.handle_finalize()
             extractor.finalize()
 
@@ -299,11 +316,27 @@ class DownloadJob(Job):
         self.visited = parent.visited if parent else set()
         self._extractor_filter = None
         self._skipcnt = 0
+        self.concurrent_downloads = self.extractor.config("concurrent-downloads", 1)
+        self.executor = ThreadPoolExecutor(max_workers=self.concurrent_downloads)
+        self.futures = []
 
     def handle_url(self, url, kwdict):
         """Download the resource specified in 'url'"""
+        # Check if we're shutting down
+        try:
+            from .downloader.segmented import _global_shutdown_event
+            if _global_shutdown_event.is_set():
+                self.log.info("Skipping download due to shutdown signal")
+                return
+        except ImportError:
+            pass
+            
+        self.futures.append(self.executor.submit(self._download_file, url, kwdict))
+
+    def _download_file(self, url, kwdict):
         hooks = self.hooks
-        pathfmt = self.pathfmt
+        pathfmt = path.PathFormat(self.extractor)
+        pathfmt.set_directory(kwdict)
         archive = self.archive
 
         # prepare download
@@ -341,14 +374,14 @@ class DownloadJob(Job):
             self.extractor.sleep(self.sleep(), "download")
 
         # download from URL
-        if not self.download(url):
+        if not self.download(url, pathfmt):
 
             # use fallback URLs if available/enabled
             fallback = kwdict.get("_fallback", ()) if self.fallback else ()
             for num, url in enumerate(fallback, 1):
                 util.remove_file(pathfmt.temppath)
                 self.log.info("Trying fallback URL #%d", num)
-                if self.download(url):
+                if self.download(url, pathfmt):
                     break
             else:
                 # download failed
@@ -505,13 +538,15 @@ class DownloadJob(Job):
                 if self._skipcnt >= self._skipmax:
                     raise self._skipexc()
 
-    def download(self, url):
+    def download(self, url, pathfmt=None):
         """Download 'url'"""
+        if pathfmt is None:
+            pathfmt = self.pathfmt
         scheme = url.partition(":")[0]
         downloader = self.get_downloader(scheme)
         if downloader:
             try:
-                return downloader.download(url, self.pathfmt)
+                return downloader.download(url, pathfmt)
             except OSError as exc:
                 if exc.errno == errno.ENOSPC:
                     raise

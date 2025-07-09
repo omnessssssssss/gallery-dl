@@ -560,6 +560,21 @@ def build_parser():
         dest="download", nargs=0, action=ConfigConstAction, const=False,
         help=("Do not download any files")
     )
+    downloader.add_argument(
+        "--downloader-segmented",
+        dest="downloader-segmented", nargs=0, action=ConfigConstAction, const=True,
+        help="Enable segmented downloading",
+    )
+    downloader.add_argument(
+        "--downloader-threads",
+        dest="downloader-threads", metavar="N", type=int, action=ConfigAction,
+        help="Number of threads to use for segmented downloading",
+    )
+    downloader.add_argument(
+        "--concurrent-downloads",
+        dest="concurrent-downloads", metavar="N", type=int, action=ConfigAction,
+        help="Number of files to download concurrently",
+    )
 
     configuration = parser.add_argument_group("Configuration Options")
     configuration.add_argument(
